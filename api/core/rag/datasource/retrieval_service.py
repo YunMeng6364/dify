@@ -20,6 +20,13 @@ from models.dataset import ChildChunk, Dataset, DocumentSegment
 from models.dataset import Document as DatasetDocument
 from services.external_knowledge_service import ExternalDatasetService
 
+# 默认检索模型配置
+# Args:
+#   search_method: 检索方法，默认为语义搜索
+#   reranking_enable: 是否启用重排序，默认为False
+#   reranking_model: 重排序模型配置
+#   top_k: 返回结果数量，默认为2
+#   score_threshold_enabled: 是否启用分数阈值过滤，默认为False
 default_retrieval_model = {
     "search_method": RetrievalMethod.SEMANTIC_SEARCH.value,
     "reranking_enable": False,
@@ -30,6 +37,22 @@ default_retrieval_model = {
 
 
 class RetrievalService:
+    """检索服务类，提供多种检索方法
+
+    检索方法：支持多种检索方式，包括：
+        关键词搜索 (keyword_search)：基于关键词匹配进行检索。
+        语义搜索 (embedding_search)：基于向量相似度进行检索。
+        全文搜索 (full_text_index_search)：基于全文索引进行检索。
+        混合搜索 (HYBRID_SEARCH)：结合多种检索方法的结果。
+
+    多线程优化：
+        使用 ThreadPoolExecutor 并行执行不同的检索方法，以提高检索效率。
+    重排序：
+        支持对检索结果进行重排序，提升结果的相关性。
+    外部知识库检索：
+        支持从外部知识库中检索数据。
+    """
+
     # Cache precompiled regular expressions to avoid repeated compilation
     @classmethod
     def retrieve(
@@ -44,6 +67,26 @@ class RetrievalService:
         weights: Optional[dict] = None,
         document_ids_filter: Optional[list[str]] = None,
     ):
+        """执行检索操作
+
+        Args:
+            cls: 类对象，用于调用类方法。
+            retrieval_method: 检索方法（如关键词搜索、语义搜索等）
+            dataset_id: 指定要检索的数据集
+            query: 查询字符串
+            top_k: 返回的文档数量上限
+            score_threshold: 分数阈值，用于过滤低分文档
+            reranking_model: 重排序模型配置，可选
+            reranking_mode: 重排序模式，默认为"reranking_model"
+            weights: 权重，用于重排序时的加权计算，可选
+            document_ids_filter: 文档ID过滤器，可选
+
+        Returns:
+            list[Document]: 检索结果文档列表
+
+        Raises:
+            ValueError: 如果检索过程中出现异常
+        """
         if not query:
             return []
         dataset = cls._get_dataset(dataset_id)
@@ -51,15 +94,16 @@ class RetrievalService:
             return []
 
         all_documents: list[Document] = []
+        # 异常处理：每个检索方法都会捕获异常，并将异常信息记录到 exceptions 列表中，最终统一抛出
         exceptions: list[str] = []
 
-        # Optimize multithreading with thread pools
+        # 使用 ThreadPoolExecutor 并行执行检索任务，最大线程数由配置 dify_config.RETRIEVAL_SERVICE_EXECUTORS 决定。
         with ThreadPoolExecutor(max_workers=dify_config.RETRIEVAL_SERVICE_EXECUTORS) as executor:  # type: ignore
             futures = []
             if retrieval_method == "keyword_search":
                 futures.append(
                     executor.submit(
-                        cls.keyword_search,
+                        cls.keyword_search,  # 关键词搜索
                         flask_app=current_app._get_current_object(),  # type: ignore
                         dataset_id=dataset_id,
                         query=query,
@@ -72,7 +116,7 @@ class RetrievalService:
             if RetrievalMethod.is_support_semantic_search(retrieval_method):
                 futures.append(
                     executor.submit(
-                        cls.embedding_search,
+                        cls.embedding_search,  # 向量嵌入搜索
                         flask_app=current_app._get_current_object(),  # type: ignore
                         dataset_id=dataset_id,
                         query=query,
@@ -88,7 +132,7 @@ class RetrievalService:
             if RetrievalMethod.is_support_fulltext_search(retrieval_method):
                 futures.append(
                     executor.submit(
-                        cls.full_text_index_search,
+                        cls.full_text_index_search,  # 执行全文索引搜索
                         flask_app=current_app._get_current_object(),  # type: ignore
                         dataset_id=dataset_id,
                         query=query,
@@ -107,6 +151,7 @@ class RetrievalService:
             raise ValueError(";\n".join(exceptions))
 
         if retrieval_method == RetrievalMethod.HYBRID_SEARCH.value:
+            # 重排序：通过 DataPostProcessor 类对检索结果进行重排序，支持自定义重排序模型和权重。
             data_post_processor = DataPostProcessor(
                 str(dataset.tenant_id), reranking_mode, reranking_model, weights, False
             )
@@ -127,6 +172,17 @@ class RetrievalService:
         external_retrieval_model: Optional[dict] = None,
         metadata_filtering_conditions: Optional[dict] = None,
     ):
+        """执行外部知识检索
+
+        Args:
+            dataset_id: 数据集ID
+            query: 查询字符串
+            external_retrieval_model: 外部检索模型配置，可选
+            metadata_filtering_conditions: 元数据过滤条件，可选
+
+        Returns:
+            list: 检索结果列表
+        """
         dataset = db.session.query(Dataset).filter(Dataset.id == dataset_id).first()
         if not dataset:
             return []
@@ -144,6 +200,14 @@ class RetrievalService:
 
     @classmethod
     def _get_dataset(cls, dataset_id: str) -> Optional[Dataset]:
+        """根据数据集ID获取数据集对象
+
+        Args:
+            dataset_id: 数据集ID
+
+        Returns:
+            Optional[Dataset]: 数据集对象，如果不存在则返回None
+        """
         return db.session.query(Dataset).filter(Dataset.id == dataset_id).first()
 
     @classmethod
@@ -157,6 +221,17 @@ class RetrievalService:
         exceptions: list,
         document_ids_filter: Optional[list[str]] = None,
     ):
+        """执行关键词搜索
+
+        Args:
+            flask_app: Flask应用实例
+            dataset_id: 数据集ID
+            query: 查询字符串
+            top_k: 返回结果数量
+            all_documents: 用于存储检索结果的文档列表
+            exceptions: 用于存储异常的列表
+            document_ids_filter: 文档ID过滤器，可选
+        """
         with flask_app.app_context():
             try:
                 dataset = cls._get_dataset(dataset_id)
@@ -186,6 +261,20 @@ class RetrievalService:
         exceptions: list,
         document_ids_filter: Optional[list[str]] = None,
     ):
+        """执行向量嵌入搜索
+
+        Args:
+            flask_app: Flask应用实例
+            dataset_id: 数据集ID
+            query: 查询字符串
+            top_k: 返回结果数量
+            score_threshold: 分数阈值，可选
+            reranking_model: 重排序模型配置，可选
+            all_documents: 用于存储检索结果的文档列表
+            retrieval_method: 检索方法
+            exceptions: 用于存储异常的列表
+            document_ids_filter: 文档ID过滤器，可选
+        """
         with flask_app.app_context():
             try:
                 dataset = cls._get_dataset(dataset_id)
@@ -239,6 +328,20 @@ class RetrievalService:
         exceptions: list,
         document_ids_filter: Optional[list[str]] = None,
     ):
+        """执行全文索引搜索
+
+        Args:
+            flask_app: Flask应用实例
+            dataset_id: 数据集ID
+            query: 查询字符串
+            top_k: 返回结果数量
+            score_threshold: 分数阈值，可选
+            reranking_model: 重排序模型配置，可选
+            all_documents: 用于存储检索结果的文档列表
+            retrieval_method: 检索方法
+            exceptions: 用于存储异常的列表
+            document_ids_filter: 文档ID过滤器，可选
+        """
         with flask_app.app_context():
             try:
                 dataset = cls._get_dataset(dataset_id)
@@ -275,11 +378,31 @@ class RetrievalService:
 
     @staticmethod
     def escape_query_for_search(query: str) -> str:
+        """转义查询字符串中的特殊字符
+
+        Args:
+            query: 原始查询字符串
+
+        Returns:
+            str: 转义后的查询字符串
+        """
         return query.replace('"', '\\"')
 
     @classmethod
     def format_retrieval_documents(cls, documents: list[Document]) -> list[RetrievalSegments]:
-        """Format retrieval documents with optimized batch processing"""
+        """格式化检索文档
+
+        使用优化的批处理方式格式化检索文档，处理父子文档关系
+
+        Args:
+            documents: 原始文档列表
+
+        Returns:
+            list[RetrievalSegments]: 格式化后的检索结果列表
+
+        Raises:
+            Exception: 如果处理过程中出现错误
+        """
         if not documents:
             return []
 

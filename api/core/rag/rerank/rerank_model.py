@@ -6,7 +6,18 @@ from core.rag.rerank.rerank_base import BaseRerankRunner
 
 
 class RerankModelRunner(BaseRerankRunner):
+    """基于重排序模型的文档重排序运行器。
+    
+    Attributes:
+        rerank_model_instance: 重排序模型实例
+    """
+    
     def __init__(self, rerank_model_instance: ModelInstance) -> None:
+        """初始化RerankModelRunner。
+        
+        Args:
+            rerank_model_instance: 重排序模型实例
+        """
         self.rerank_model_instance = rerank_model_instance
 
     def run(
@@ -17,14 +28,20 @@ class RerankModelRunner(BaseRerankRunner):
         top_n: Optional[int] = None,
         user: Optional[str] = None,
     ) -> list[Document]:
-        """
-        Run rerank model
-        :param query: search query
-        :param documents: documents for reranking
-        :param score_threshold: score threshold
-        :param top_n: top n
-        :param user: unique user id if needed
-        :return:
+        """运行重排序模型对文档进行重新排序。
+        
+        Args:
+            query: 搜索查询字符串
+            documents: 待重排序的文档列表
+            score_threshold: 分数阈值，低于此值的文档将被过滤
+            top_n: 返回的文档数量上限
+            user: 用户标识符(可选)
+            
+        Returns:
+            重排序后的文档列表，按分数降序排列
+            
+        Raises:
+            ValueError: 如果输入参数无效
         """
         docs = []
         doc_ids = set()
@@ -53,7 +70,7 @@ class RerankModelRunner(BaseRerankRunner):
 
         for result in rerank_result.docs:
             if score_threshold is None or result.score >= score_threshold:
-                # format document
+                # 格式化文档
                 rerank_document = Document(
                     page_content=result.text,
                     metadata=documents[result.index].metadata,

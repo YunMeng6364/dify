@@ -21,12 +21,15 @@ from core.errors.error import (
 from core.model_runtime.errors.invoke import InvokeError
 from fields.hit_testing_fields import hit_testing_record_fields
 from services.dataset_service import DatasetService
-from services.hit_testing_service import HitTestingService
+from services.hit_testing_service import HitTestingService  # 核心检索服务
 
 
 class DatasetsHitTestingBase:
     @staticmethod
     def get_and_validate_dataset(dataset_id: str):
+        """
+        获取并验证数据集的有效性并检查用户的权限
+        """
         dataset = DatasetService.get_dataset(dataset_id)
         if dataset is None:
             raise NotFound("Dataset not found.")
@@ -40,10 +43,12 @@ class DatasetsHitTestingBase:
 
     @staticmethod
     def hit_testing_args_check(args):
+        # 检查命中测试参数的有效性
         HitTestingService.hit_testing_args_check(args)
 
     @staticmethod
     def parse_args():
+        # 解析请求参数
         parser = reqparse.RequestParser()
 
         parser.add_argument("query", type=str, location="json")
@@ -54,6 +59,7 @@ class DatasetsHitTestingBase:
     @staticmethod
     def perform_hit_testing(dataset, args):
         try:
+            # 执行命中测试并处理结果 TODO 核心检索服务
             response = HitTestingService.retrieve(
                 dataset=dataset,
                 query=args["query"],

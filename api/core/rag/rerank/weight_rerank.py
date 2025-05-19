@@ -14,7 +14,17 @@ from core.rag.rerank.rerank_base import BaseRerankRunner
 
 
 class WeightRerankRunner(BaseRerankRunner):
+    """
+    基于关键词和向量相似度得分的文档重排序类。
+    """
+
     def __init__(self, tenant_id: str, weights: Weights) -> None:
+        """
+        初始化WeightRerankRunner。
+
+        :param tenant_id: 租户ID，用于模型管理。
+        :param weights: 关键词和向量得分的权重配置。
+        """
         self.tenant_id = tenant_id
         self.weights = weights
 
@@ -27,15 +37,17 @@ class WeightRerankRunner(BaseRerankRunner):
         user: Optional[str] = None,
     ) -> list[Document]:
         """
-        Run rerank model
-        :param query: search query
-        :param documents: documents for reranking
-        :param score_threshold: score threshold
-        :param top_n: top n
-        :param user: unique user id if needed
+        运行重排序模型，根据关键词和向量相似度得分对文档进行排序。
 
-        :return:
+        :param query: 搜索查询。
+        :param documents: 需要重排序的文档列表。
+        :param score_threshold: 得分阈值，低于此阈值的文档将被过滤。
+        :param top_n: 返回的文档数量上限。
+        :param user: 用户ID，如果需要。
+
+        :return: 重排序后的文档列表。
         """
+        # 去除重复文档
         unique_documents = []
         doc_ids = set()
         for document in documents:
@@ -45,9 +57,11 @@ class WeightRerankRunner(BaseRerankRunner):
 
         documents = unique_documents
 
+        # 计算关键词得分和向量相似度得分
         query_scores = self._calculate_keyword_score(query, documents)
         query_vector_scores = self._calculate_cosine(self.tenant_id, query, documents, self.weights.vector_setting)
 
+        # 结合得分并过滤文档
         rerank_documents = []
         for document, query_score, query_vector_score in zip(documents, query_scores, query_vector_scores):
             score = (
@@ -60,53 +74,50 @@ class WeightRerankRunner(BaseRerankRunner):
                 document.metadata["score"] = score
                 rerank_documents.append(document)
 
+        # 按得分降序排序并返回前top_n个文档
         rerank_documents.sort(key=lambda x: x.metadata["score"] if x.metadata else 0, reverse=True)
         return rerank_documents[:top_n] if top_n else rerank_documents
 
     def _calculate_keyword_score(self, query: str, documents: list[Document]) -> list[float]:
         """
-        Calculate BM25 scores
-        :param query: search query
-        :param documents: documents for reranking
+        计算基于BM25算法的关键词得分。
 
-        :return:
+        :param query: 搜索查询。
+        :param documents: 需要得分的文档列表。
+
+        :return: 每个文档的关键词得分列表。
         """
         keyword_table_handler = JiebaKeywordTableHandler()
         query_keywords = keyword_table_handler.extract_keywords(query, None)
         documents_keywords = []
         for document in documents:
-            # get the document keywords
+            # 提取文档关键词
             document_keywords = keyword_table_handler.extract_keywords(document.page_content, None)
             if document.metadata is not None:
                 document.metadata["keywords"] = document_keywords
                 documents_keywords.append(document_keywords)
 
-        # Counter query keywords(TF)
+        # 计算查询关键词的TF（词频）
         query_keyword_counts = Counter(query_keywords)
-
-        # total documents
         total_documents = len(documents)
-
-        # calculate all documents' keywords IDF
         all_keywords = set()
         for document_keywords in documents_keywords:
             all_keywords.update(document_keywords)
 
+        # 计算所有关键词的IDF（逆文档频率）
         keyword_idf = {}
         for keyword in all_keywords:
-            # calculate include query keywords' documents
             doc_count_containing_keyword = sum(1 for doc_keywords in documents_keywords if keyword in doc_keywords)
-            # IDF
             keyword_idf[keyword] = math.log((1 + total_documents) / (1 + doc_count_containing_keyword)) + 1
 
+        # 计算查询关键词的TF-IDF
         query_tfidf = {}
-
         for keyword, count in query_keyword_counts.items():
             tf = count
             idf = keyword_idf.get(keyword, 0)
             query_tfidf[keyword] = tf * idf
 
-        # calculate all documents' TF-IDF
+        # 计算每个文档的TF-IDF
         documents_tfidf = []
         for document_keywords in documents_keywords:
             document_keyword_counts = Counter(document_keywords)
@@ -117,6 +128,7 @@ class WeightRerankRunner(BaseRerankRunner):
                 document_tfidf[keyword] = tf * idf
             documents_tfidf.append(document_tfidf)
 
+        # 计算余弦相似度
         def cosine_similarity(vec1, vec2):
             intersection = set(vec1.keys()) & set(vec2.keys())
             numerator = sum(vec1[x] * vec2[x] for x in intersection)
@@ -130,13 +142,11 @@ class WeightRerankRunner(BaseRerankRunner):
             else:
                 return float(numerator) / denominator
 
+        # 计算每个文档与查询的余弦相似度
         similarities = []
         for document_tfidf in documents_tfidf:
             similarity = cosine_similarity(query_tfidf, document_tfidf)
             similarities.append(similarity)
-
-        # for idx, similarity in enumerate(similarities):
-        #     print(f"Document {idx + 1} similarity: {similarity}")
 
         return similarities
 
@@ -144,16 +154,18 @@ class WeightRerankRunner(BaseRerankRunner):
         self, tenant_id: str, query: str, documents: list[Document], vector_setting: VectorSetting
     ) -> list[float]:
         """
-        Calculate Cosine scores
-        :param query: search query
-        :param documents: documents for reranking
+        计算查询与文档向量之间的余弦相似度得分。
 
-        :return:
+        :param tenant_id: 租户ID，用于模型管理。
+        :param query: 搜索查询。
+        :param documents: 需要得分的文档列表。
+        :param vector_setting: 向量配置，用于嵌入模型。
+
+        :return: 每个文档的余弦相似度得分列表。
         """
         query_vector_scores = []
 
         model_manager = ModelManager()
-
         embedding_model = model_manager.get_model_instance(
             tenant_id=tenant_id,
             provider=vector_setting.embedding_provider_name,
@@ -162,23 +174,17 @@ class WeightRerankRunner(BaseRerankRunner):
         )
         cache_embedding = CacheEmbedding(embedding_model)
         query_vector = cache_embedding.embed_query(query)
+
+        # 计算每个文档的余弦相似度
         for document in documents:
-            # calculate cosine similarity
             if document.metadata and "score" in document.metadata:
                 query_vector_scores.append(document.metadata["score"])
             else:
-                # transform to NumPy
                 vec1 = np.array(query_vector)
                 vec2 = np.array(document.vector)
-
-                # calculate dot product
                 dot_product = np.dot(vec1, vec2)
-
-                # calculate norm
                 norm_vec1 = np.linalg.norm(vec1)
                 norm_vec2 = np.linalg.norm(vec2)
-
-                # calculate cosine similarity
                 cosine_sim = dot_product / (norm_vec1 * norm_vec2)
                 query_vector_scores.append(cosine_sim)
 
