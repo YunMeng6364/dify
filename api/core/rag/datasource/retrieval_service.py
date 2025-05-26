@@ -232,20 +232,32 @@ class RetrievalService:
             exceptions: 用于存储异常的列表
             document_ids_filter: 文档ID过滤器，可选
         """
+        """
+        在Flask应用的上下文中执行数据集查询和关键词搜索操作。
+        这样做可以确保在应用的上下文中正确地处理请求，并能够访问Flask应用中的资源。
+        """
         with flask_app.app_context():
             try:
+                # 尝试根据数据集ID获取数据集实例
                 dataset = cls._get_dataset(dataset_id)
+                # 如果数据集不存在，则抛出ValueError异常
                 if not dataset:
                     raise ValueError("dataset not found")
 
+                # 创建Keyword实例，关联到获取的数据集
                 keyword = Keyword(dataset=dataset)
 
+                # 执行关键词搜索，并获取搜索结果
                 documents = keyword.search(
                     cls.escape_query_for_search(query), top_k=top_k, document_ids_filter=document_ids_filter
                 )
+                # 将搜索到的文档添加到all_documents列表中
                 all_documents.extend(documents)
+            # 捕获并处理在try块中抛出的任何异常
             except Exception as e:
+                # 将异常信息转换为字符串并添加到exceptions列表中
                 exceptions.append(str(e))
+
 
     @classmethod
     def embedding_search(

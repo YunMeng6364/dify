@@ -161,30 +161,45 @@ class Jieba(BaseKeyword):
         Returns:
             匹配的文档列表，按相关性排序
         """
+
+        # 1. 获取关键词表
         keyword_table = self._get_dataset_keyword_table()
 
+        # 2. 获取搜索参数
         k = kwargs.get("top_k", 4)
         document_ids_filter = kwargs.get("document_ids_filter")
+
+        # 3. 根据查询检索相关文本ID
         sorted_chunk_indices = self._retrieve_ids_by_query(keyword_table or {}, query, k)
 
+        # 4. 从数据库获取文档内容
         documents = []
         for chunk_index in sorted_chunk_indices:
+            # 构建数据库查询
             segment_query = db.session.query(DocumentSegment).filter(
-                DocumentSegment.dataset_id == self.dataset.id, DocumentSegment.index_node_id == chunk_index
+                DocumentSegment.dataset_id == self.dataset.id,
+                DocumentSegment.index_node_id == chunk_index
             )
+
+            # 应用文档ID过滤
             if document_ids_filter:
-                segment_query = segment_query.filter(DocumentSegment.document_id.in_(document_ids_filter))
+                segment_query = segment_query.filter(
+                    DocumentSegment.document_id.in_(document_ids_filter)
+                )
+
+            # 获取文档段
             segment = segment_query.first()
 
             if segment:
+                # 创建Document对象
                 documents.append(
                     Document(
                         page_content=segment.content,
                         metadata={
-                            "doc_id": chunk_index,
-                            "doc_hash": segment.index_node_hash,
+                            "doc_id"     : chunk_index,
+                            "doc_hash"   : segment.index_node_hash,
                             "document_id": segment.document_id,
-                            "dataset_id": segment.dataset_id,
+                            "dataset_id" : segment.dataset_id,
                         },
                     )
                 )
