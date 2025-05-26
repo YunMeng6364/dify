@@ -51,14 +51,18 @@ class WeightRerankRunner(BaseRerankRunner):
         unique_documents = []
         doc_ids = set()
         for document in documents:
+            # 根据doc_id去重
             if document.metadata is not None and document.metadata["doc_id"] not in doc_ids:
                 doc_ids.add(document.metadata["doc_id"])
                 unique_documents.append(document)
 
+        # 生成唯一文档列表
         documents = unique_documents
 
         # 计算关键词得分和向量相似度得分
+        # 1. 基于BM25算法的关键词得分, 响应数据结构为：[float, ...]
         query_scores = self._calculate_keyword_score(query, documents)
+        # 2. 基于向量相似度的得分, 响应数据结构为：[float, ...]
         query_vector_scores = self._calculate_cosine(self.tenant_id, query, documents, self.weights.vector_setting)
 
         # 结合得分并过滤文档
@@ -88,7 +92,10 @@ class WeightRerankRunner(BaseRerankRunner):
         :return: 每个文档的关键词得分列表。
         """
         keyword_table_handler = JiebaKeywordTableHandler()
+
+        # 提取查询关键词
         query_keywords = keyword_table_handler.extract_keywords(query, None)
+        # 提取每个文档的关键词
         documents_keywords = []
         for document in documents:
             # 提取文档关键词
@@ -112,6 +119,13 @@ class WeightRerankRunner(BaseRerankRunner):
 
         # 计算查询关键词的TF-IDF
         query_tfidf = {}
+        """
+        query_tfidf 键是关键词，值是该关键词的TF-IDF分数, 所以是一个“关键词->分数”的字典，代表query的TF-IDF向量。
+
+        - 单个关键词的TF-IDF确实是一个小数，但整个query的TF-IDF向量是一个“稀疏向量” ——每个关键词一个分数。
+        - 这个向量的每个维度代表一个词，值是该词的TF-IDF分数。
+        - 只有在和文档的TF-IDF向量做余弦相似度时，才会把这两个“向量”合成一个相关性分数（小数）。
+        """
         for keyword, count in query_keyword_counts.items():
             tf = count
             idf = keyword_idf.get(keyword, 0)
@@ -130,21 +144,49 @@ class WeightRerankRunner(BaseRerankRunner):
 
         # 计算余弦相似度
         def cosine_similarity(vec1, vec2):
+            """
+            计算两个向量的余弦相似度
+
+            参数:
+                vec1 (dict): 第一个向量，表示为键值对字典，键是特征名，值是对应特征值
+                vec2 (dict): 第二个向量，格式与vec1相同
+
+            返回:
+                float: 两个向量的余弦相似度值，范围在[0,1]之间
+
+            先找出query和文档都出现过的关键词（交集）。
+            只对这些关键词，把query和文档的TF-IDF分数相乘并求和（点积）。
+            分别计算query和文档所有关键词分数的平方和（模长）。
+            用点积除以模长的乘积，得到一个0~1之间的小数，表示相关性。
+
+            """
+            # 计算两个向量的交集特征
             intersection = set(vec1.keys()) & set(vec2.keys())
+            # 计算点积（分子部分）
             numerator = sum(vec1[x] * vec2[x] for x in intersection)
 
+            # 计算每个向量的L2范数平方
             sum1 = sum(vec1[x] ** 2 for x in vec1)
             sum2 = sum(vec2[x] ** 2 for x in vec2)
+            # 计算分母（L2范数的乘积）
             denominator = math.sqrt(sum1) * math.sqrt(sum2)
 
+            # 处理分母为零的情况
             if not denominator:
                 return 0.0
             else:
                 return float(numerator) / denominator
 
         # 计算每个文档与查询的余弦相似度
+        """
+        - 在信息检索中，文本的TF-IDF向量就是用“字典”或“数组”来表示的。
+        - 余弦相似度的本质是两个向量的夹角余弦值，而这里的“向量”就是“关键词-分数”对的集合。
+        """
         similarities = []
         for document_tfidf in documents_tfidf:
+            """
+            这里的query_tfidf和document_tfidf都是“关键词->分数”的字典，代表两个文本在所有关键词上的“投影”。
+            """
             similarity = cosine_similarity(query_tfidf, document_tfidf)
             similarities.append(similarity)
 
